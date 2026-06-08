@@ -1,0 +1,59 @@
+client-brief 참조해서 무엇이 문제이고 무엇을 해결하는 app을 만들것 인지를 만들것
+  - fact check needed all around of the data from LLM
+  - security should be addressed (end point should be secured like badrock)
+  - user's usage should be standarized -> every answer can be different otherwise
+
+Todo list 
+AI 에게 어떤것 먼저하는 것이 좋은지 알려달라 요청. client-brief 참조해서 좋은 순서에 따라서 계획 진행 계획서 작성해줘. 
+그 결과에 따르면 아래와 같은 순서로 진행
+ - download documents for RAG
+ - supabase setup (1) https://supabase.com/dashboard/project/mntxmbfrcqudjoqwyhkc/database/tables/18278
+   - .env file 생경
+   SUPABASE_URL=https://mntxmbfrcqudjoqwyhkc.supabase.co
+   -   url: siteky(supabase project key).supabase.co (DATABASE_PASSWORD)
+   - Annon_key: Publishable key
+   -Service_role_key: Secret keys
+ - Pydentic setting을 사용하여 config.py 만들어 .env와 연결
+
+ - create main.py: config 연결
+ - Checkpoint: backend project have it's own environment 
+   - uv sync generate .venv -> link the environment by python: select interpreter (copy path)
+
+ - Model과 Table 만들기 (SQLAlchemy)
+   
+   ToDo에 만들어진 Table list를 기반으로 모델 생성 요청. 만들어진 이후의 결과에 대하여 pushback
+   
+   Migration to db: 만들어진 결과에 대하여 Alembic을 써서 해달라고 요청.
+
+   확인 uv run alembic upgrade head at the end
+   https://supabase.com/dashboard/project/mntxmbfrcqudjoqwyhkc/database/tables
+
+   Client (supabase.py)를 db에 맞게 만들어 달라고 요청
+
+
+ - Auth 하기위해 우선 frontend setup
+   - tailwind 및 shadcn component 상요 (frontend-setup.md 참조)
+   - shadcn for the component
+
+ - backend token을 보고 auth를 check할 feature만들어줘 (dependencies.ts in todo list)
+
+ - frontend 
+   - .env를 연결해줄 backend setting과 같은 것 만들어 (lib/env.ts)
+   - supabase client를 만들고 (supabase.ts)
+   - fetch feature 만들어줘 (lib/http.ts)
+
+ test: uv run uvicorn app.main:app --reload
+
+
+
+
+
+
+
+ 
+
+
+  
+
+
+
