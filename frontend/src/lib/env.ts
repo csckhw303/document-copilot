@@ -1,5 +1,5 @@
 function requireEnv(name: keyof ImportMetaEnv): string {
-  const value = import.meta.env[name]
+  const value = import.meta.env[name as string]
   if (typeof value !== 'string' || value.trim() === '') {
     throw new Error(`Missing required environment variable: ${name}`)
   }

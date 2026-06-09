@@ -8,4 +8,4 @@ export function useThreads() {
     throw new Error('useThreads must be used within ThreadsProvider')
   }
   return context
-}s
+}

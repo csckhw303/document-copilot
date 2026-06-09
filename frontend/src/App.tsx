@@ -1,9 +1,11 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 
 import { ProtectedRoute } from '@/components/ProtectedRoute'
-import { Chats } from '@/pages/Chats'
 import { Login } from '@/pages/Login'
 import { SignUp } from '@/pages/SignUp'
+import { ChatLayout } from '@/components/chat/ChatLayout'
+import { ChatEmptyPage } from '@/pages/chat/ChatEmptyPage'
+import { ChatThreadPage } from '@/pages/chat/ChatThreadPage'
 
 export default function App() {
   return (
@@ -14,10 +16,13 @@ export default function App() {
         path="/chats"
         element={
           <ProtectedRoute>
-            <Chats />
+            <ChatLayout />
           </ProtectedRoute>
         }
-      />
+      >
+        <Route index element={<ChatEmptyPage />} />
+        <Route path=":threadId" element={<ChatThreadPage />} />
+      </Route>
       <Route path="*" element={<Navigate to="/chats" replace />} />
     </Routes>
   )

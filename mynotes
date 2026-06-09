@@ -44,6 +44,8 @@ AI 에게 어떤것 먼저하는 것이 좋은지 알려달라 요청. client-br
 
  test: uv run uvicorn app.main:app --reload
 
+ runTurn -> document_agent + deps + query -> stream
+
 
 
 
