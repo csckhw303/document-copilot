@@ -1,3 +1,4 @@
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -5,8 +6,17 @@ import uvicorn
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.config import settings
+from app.logging_config import configure_logging
+
+configure_logging()
+log = structlog.get_logger()
 
 app = FastAPI(title="Document Copilot")
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    log.info("server starting", chat_model=settings.openai_chat_model, port=8000)
 
 
 app.add_middleware(

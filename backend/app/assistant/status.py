@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import structlog
+
 from app.assistant.deps import DocumentAgentDeps
 from app.assistant.progress import report_progress
+
+log = structlog.get_logger()
 
 
 def emit_tool_start(deps: DocumentAgentDeps, name: str, detail: str) -> None:
     report_progress(f"tool {name} start {detail}")
+    log.info("tool call", tool=name, detail=detail)
     stage, message = _tool_start_status(name, detail)
     deps.emit_status(stage, message)
 
 
 def emit_agent_start(deps: DocumentAgentDeps, *, model: str, request_limit: int) -> None:
-    report_progress(
-        f"agent run start model={model} request_limit={request_limit}"
-    )
+    report_progress(f"agent run start model={model} request_limit={request_limit}")
+    log.info("agent start", model=model, request_limit=request_limit)
     deps.emit_status("analyzing", "Analyzing your question…")
 
 
@@ -28,9 +32,15 @@ def emit_agent_done(
     output_tokens: int | None,
 ) -> None:
     report_progress(
-        "agent run done "
-        f"requests={requests} tool_calls={tool_calls} "
+        f"agent done requests={requests} tool_calls={tool_calls} "
         f"input_tokens={input_tokens} output_tokens={output_tokens}"
+    )
+    log.info(
+        "agent done",
+        requests=requests,
+        tool_calls=tool_calls,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
     deps.emit_status("verifying", "Verifying citations…")
 

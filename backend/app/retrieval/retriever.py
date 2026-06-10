@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
+
+import structlog
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +20,8 @@ from app.retrieval.queries import full_text_search, semantic_search
 from app.retrieval.types import RankedChunkHit, RetrievedPassage, SearchFilters
 
 from app.database.models import DocumentChunk, SourceDocument
+
+log = structlog.get_logger()
 
 
 class DocumentRetriever:
@@ -64,6 +69,7 @@ class DocumentRetriever:
         candidate_k: int,
         include_neighbors: bool,
     ) -> list[RetrievedPassage]:
+        t0 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=2) as prep:
             embed_future = prep.submit(embed_query, query)
             kw_future = prep.submit(extract_fts_keywords, query, filters=filters)
@@ -85,6 +91,7 @@ class DocumentRetriever:
         )[:top_k]
 
         if not fused:
+            log.info("search", query=query[:80], filters=str(filters), hits=0, elapsed=round(time.perf_counter() - t0, 2))
             return []
 
         fused_ids = [chunk_id for chunk_id, _ in fused]
@@ -128,6 +135,7 @@ class DocumentRetriever:
                 )
             )
 
+        log.info("search", query=query[:80], filters=str(filters), hits=len(passages), elapsed=round(time.perf_counter() - t0, 2))
         return passages
 
 

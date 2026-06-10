@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
@@ -35,6 +36,8 @@ from app.schemas.chat import (
     ThreadListResponse,
     ThreadResponse,
 )
+
+log = structlog.get_logger()
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -179,6 +182,7 @@ async def post_stream(
     client = await create_user_client(access_token)
 
     retriever = DocumentRetriever()
+    log.info("stream request", thread_id=str(body.thread_id), user_id=str(user.id))
     return StreamingResponse(
         run_turn(
             client=client,

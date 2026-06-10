@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator
+
+import structlog
 
 from supabase import AsyncClient
 
@@ -23,6 +26,8 @@ from app.retrieval.retriever import DocumentRetriever
 from app.schemas.chat import UIMessage
 
 MAX_VALIDATION_ATTEMPTS = 2
+
+log = structlog.get_logger()
 
 
 async def _yield_status_updates(
@@ -59,6 +64,10 @@ async def run_turn(
             yield event
         return
 
+    turn_log = log.bind(thread_id=str(thread_id), user_id=str(user.id))
+    turn_log.info("turn start", query=query[:120])
+    t0 = time.perf_counter()
+
     async for event in stream_status("analyzing", "Analyzing your question…"):
         yield event
 
@@ -88,6 +97,7 @@ async def run_turn(
         try:
             grounded = await agent_task
         except Exception as exc:
+            turn_log.error("agent failed", error=str(exc))
             async for event in stream_error(f"Assistant run failed: {exc}"):
                 yield event
             return
@@ -97,6 +107,7 @@ async def run_turn(
 
         grounded = prune_unreferenced_citations(grounded)
         validation = await GroundingValidator().validate(grounded, registry)
+        turn_log.info("validation", attempt=attempt, ok=validation.ok, citations=len(grounded.citations))
         if validation.ok or attempt == MAX_VALIDATION_ATTEMPTS:
             break
 
@@ -114,6 +125,8 @@ async def run_turn(
     if validation.ok:
         async for event in stream_status("streaming", "Preparing answer…"):
             yield event
+
+    turn_log.info("turn done", elapsed=round(time.perf_counter() - t0, 2), ok=validation.ok)
 
     async for event in stream_grounded_turn_and_persist(
         client=client,
