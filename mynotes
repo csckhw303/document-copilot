@@ -46,6 +46,178 @@ AI 에게 어떤것 먼저하는 것이 좋은지 알려달라 요청. client-br
 
  runTurn -> document_agent + deps + query -> stream
 
+ - Ingestion 
+   - 스크립 만들어 줘 use docling to convert html to markdown (data/convert_to_markdown)
+   - Now markdown file을 db로 옮겨줘 (backend/ingestion/load_source_documents) => resource_document table
+   - Now chunk and embedding
+     - HybridChunker = Hyarachical Chunk (not just naive chunking by size but awareness of meaning) + token size consideration
+     - uv run ex) python -m ingest.chunk_and_embed --all (chunks -> embed -> table save -> save dicument_chunk )
+
+     - Hybrid retrieval: similarity and exact terms(BM25) => Reciprocal Rank Fusion(RRF) 
+     - tgVector(vector search) tsVector(FTS)
+     -Test:
+      run pytest .\tests\retrieval\test_retriever.py 
+      uv run python scripts/smoke_retrieval.py
+       
+  - LLM grounded answer 
+  USER QUERY
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  RETRIEVER  (retriever.py)                          │
+│                                                     │
+│  query ──► embed_query() ──► vector [0.1, 0.3, ...] │
+│  query ──► extract_fts_keywords() ──► "iPhone rev"  │
+│                                                     │
+│  ┌─────────────────┐  ┌─────────────────┐           │
+│  │ semantic_search │  │ full_text_search │  parallel │
+│  │ (pgvector <=>)  │  │ (tsvector @@)   │  threads  │
+│  └────────┬────────┘  └────────┬────────┘           │
+│           └──────────┬─────────┘                    │
+│                   RRF fusion                        │
+│               top-K passages                        │
+│           + neighbor chunks attached                │
+└─────────────────────┬───────────────────────────────┘
+                      │ list[RetrievedPassage]
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  TURN REGISTRY  (deps.py)                           │
+│                                                     │
+│  passages_by_chunk_id = {                           │
+│    chunk_uuid_A: RetrievedPassage(text, ticker...), │
+│    chunk_uuid_B: RetrievedPassage(...),             │
+│  }                ← the citation allowlist          │
+└─────────────────────┬───────────────────────────────┘
+                      │ passages injected as context
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  DOCUMENT AGENT  (agent.py)                         │
+│                                                     │
+│  LLM reads passages + user query                    │
+│  produces GroundedAnswer:                           │
+│  {                                                  │
+│    answer: "Revenue grew 6% [1] driven by           │
+│             Services [2]",                          │
+│    citations: [                                     │
+│      { index:1, chunk_id: uuid_A,                   │
+│        excerpt: "revenue grew 6%" },                │
+│      { index:2, chunk_id: uuid_B,                   │
+│        excerpt: "Services segment..." }             │
+│    ]                                                │
+│  }                                                  │
+└─────────────────────┬───────────────────────────────┘
+                      │ GroundedAnswer
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  VALIDATOR  (validator.py)                          │
+│                                                     │
+│  1. structural checks (fast, no LLM)                │
+│     ├─ answer not empty?                            │
+│     ├─ citation indexes 1-based, contiguous?        │
+│     ├─ every [n] marker has a citation?             │
+│     └─ every chunk_id in registry?  ← allowlist     │
+│                                                     │
+│  2. grounding check (LLM judge)                     │
+│     for each citation:                              │
+│     ┌──────────────────────────────┐                │
+│     │ answer claim + excerpt       │                │
+│     │        +                     │──► supported?  │
+│     │ source_text from registry    │    true/false  │
+│     └──────────────────────────────┘                │
+│                                                     │
+│     all supported? ──► ok=True                      │
+│     any unsupported? ──► ok=False ──► RETRY (x2)    │
+└─────────────────────┬───────────────────────────────┘
+                      │ ValidationResult(ok=True)
+                      ▼
+              stream answer to frontend
+              + persist to DB
+
+Orchestartion perspctive
+POST /chat/stream  (api/chat.py)
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────┐
+│  ORCHESTRATOR  run_turn()  (chat/orchestrator.py)             │
+│                                                               │
+│  Role: conductor — owns the retry loop, streams SSE events,  │
+│  and coordinates all components below                         │
+│                                                               │
+│  1. SETUP                                                     │
+│     ├─ create TurnRegistry()      ← citation allowlist        │
+│     ├─ create status_queue        ← thread-safe event pipe    │
+│     └─ create DocumentAgentDeps   ← inject retriever+registry │
+│                                                               │
+│  2. RUN AGENT  (in background thread)                         │
+│     │                                                         │
+│     │   asyncio.create_task(                                  │
+│     │     asyncio.to_thread(run_document_agent)               │
+│     │   )                                                      │
+│     │                                                         │
+│     │         ┌──────────────────────────────┐                │
+│     │         │  AGENT  (assistant/agent.py) │                │
+│     │         │                              │                │
+│     │         │  loop:                       │                │
+│     │         │   call search_filings() ──►retriever          │
+│     │         │   call read_chunks()    ──►DB                 │
+│     │         │   register passages    ──►TurnRegistry        │
+│     │         │   emit_status()        ──►status_queue        │
+│     │         │                              │                │
+│     │         │  finally: produce            │                │
+│     │         │  GroundedAnswer{             │                │
+│     │         │    answer: "text [1]",       │                │
+│     │         │    citations: [...]          │                │
+│     │         │  }                           │                │
+│     │         └──────────────────────────────┘                │
+│     │                                                         │
+│     │  WHILE agent runs:                                      │
+│     │  drain status_queue → yield SSE status events           │
+│     │  "analyzing…" "searching…" "reading…"  ──► frontend     │
+│     │                                                         │
+│  3. VALIDATE  (retry up to 2x)                                │
+│     │                                                         │
+│     │         ┌──────────────────────────────┐                │
+│     │         │  VALIDATOR (grounding/)      │                │
+│     │         │  structural checks           │                │
+│     │         │  + LLM grounding judge       │                │
+│     │         │  → ValidationResult(ok=T/F)  │                │
+│     │         └──────────────────────────────┘                │
+│     │                                                         │
+│     │  ok=False + attempts left?                              │
+│     │  └─► yield "retrying…" SSE → go back to step 2         │
+│     │                                                         │
+│  4. STREAM + PERSIST                                          │
+│     │                                                         │
+│     │  stream_grounded_turn_and_persist()                     │
+│     │   ├─ yield answer text as SSE chunks  ──► frontend      │
+│     │   └─ write messages + citations to DB                   │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+
+    
+Especially for the Pydentic AI loop
+┌─────────────────────────────────────────────────────┐
+│  run_sync("Apple revenue 2024?", deps=deps)         │
+│                                                     │
+│  round 1:                                           │
+│    LLM receives: query + instructions               │
+│    LLM decides: I need data → call search_filings() │
+│    → tool runs → returns passage text               │
+│                                                     │
+│  round 2:                                           │
+│    LLM receives: query + instructions + tool result │
+│    LLM decides: need more → call read_chunks()      │
+│    → tool runs → returns chunk text                 │
+│                                                     │
+│  round 3:                                           │
+│    LLM receives: everything so far                  │
+│    LLM decides: enough evidence → produce answer    │
+│    → returns GroundedAnswer JSON                    │
+│                                                     │
+│  run_sync returns result                            │
+└─────────────────────────────────────────────────────┘
+
+
 
 
 

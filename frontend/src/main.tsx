@@ -9,7 +9,6 @@ import { ChatEmptyPage } from '@/pages/chat/ChatEmptyPage'
 import { ChatThreadPage } from '@/pages/chat/ChatThreadPage'
 import { Login } from '@/pages/Login'
 import { SignUp } from '@/pages/SignUp'
-import { TooltipProvider } from '@/components/ui/tooltip'
 
 import './index.css'
 
@@ -53,8 +52,6 @@ function App() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <TooltipProvider>
-      <App />
-    </TooltipProvider>
+    <App />
   </StrictMode>
 )
