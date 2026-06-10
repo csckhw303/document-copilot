@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "railway": {
+      "command": "railway",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
