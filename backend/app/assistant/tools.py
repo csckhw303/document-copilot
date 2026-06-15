@@ -7,6 +7,7 @@ import functools
 import time
 from uuid import UUID
 
+from langfuse import observe
 from pydantic_ai import RunContext
 
 from app.assistant.deps import DocumentAgentDeps
@@ -144,6 +145,7 @@ async def _run_tool(
     return result
 
 
+@observe(name="search_filings", as_type="tool")
 async def search_filings(
     ctx: RunContext[DocumentAgentDeps],
     query: str,
@@ -199,6 +201,7 @@ async def read_chunk(ctx: RunContext[DocumentAgentDeps], chunk_id: str) -> str:
     return format_passages_for_agent([passage])
 
 
+@observe(name="read_chunks", as_type="tool")
 async def read_chunks(ctx: RunContext[DocumentAgentDeps], chunk_ids: list[str]) -> str:
     """Read the full text of multiple document chunks in one call."""
     parsed_ids: list[UUID] = []
@@ -226,6 +229,7 @@ async def read_chunks(ctx: RunContext[DocumentAgentDeps], chunk_ids: list[str]) 
     return format_passages_for_agent(passages)
 
 
+@observe(name="read_surrounding_chunks", as_type="tool")
 async def read_surrounding_chunks(
     ctx: RunContext[DocumentAgentDeps],
     chunk_id: str,
@@ -237,8 +241,10 @@ async def read_surrounding_chunks(
     except ValueError:
         return f"Error: invalid chunk_id {chunk_id!r}."
 
-    resolved_radius = (
-        radius if radius is not None else settings.retrieval_neighbor_radius
+    _MAX_RADIUS = 3
+    resolved_radius = min(
+        radius if radius is not None else settings.retrieval_neighbor_radius,
+        _MAX_RADIUS,
     )
     if resolved_radius < 1:
         return "Error: radius must be 1 or greater."

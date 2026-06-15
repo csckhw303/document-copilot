@@ -3,6 +3,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+from app.tracing import init_tracing
+
+init_tracing()  # must run before any @observe imports touch os.environ
+
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.config import settings

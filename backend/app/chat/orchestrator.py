@@ -107,7 +107,7 @@ async def run_turn(
 
         grounded = prune_unreferenced_citations(grounded)
         validation = await GroundingValidator().validate(grounded, registry)
-        turn_log.info("validation", attempt=attempt, ok=validation.ok, citations=len(grounded.citations))
+        turn_log.info("validation", attempt=attempt, ok=validation.ok, citations=len(grounded.citations), error=validation.error)
         if validation.ok or attempt == MAX_VALIDATION_ATTEMPTS:
             break
 

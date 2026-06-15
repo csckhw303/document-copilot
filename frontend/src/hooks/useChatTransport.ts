@@ -57,7 +57,13 @@ export function useChatTransport(
           return token ? { Authorization: `Bearer ${token}` } : {}
         },
         prepareSendMessagesRequest: ({ messages }) => ({
-          body: { threadId, messages },
+          body: {
+            threadId,
+            messages: messages.map((msg) => ({
+              ...msg,
+              parts: msg.parts?.filter((p) => p.type !== 'data-status') ?? [],
+            })),
+          },
         }),
         fetch: async (input, init) => {
           const response = await fetch(input, init)

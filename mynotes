@@ -217,6 +217,26 @@ Especially for the Pydentic AI loop
 │  run_sync returns result                            │
 └─────────────────────────────────────────────────────┘
 
+citation 
+SEC filing database
+        │
+        ▼
+   source_text          ← full chunk, e.g. a whole paragraph from Apple 10-K
+        │
+        ▼
+   Citation {
+     citation_index: 1
+     chunk_id: "abc-123"
+     excerpt: "Net sales were $394.3 billion"   ← agent write into structured answer (GroundedAnswer)
+   }
+        │
+        ▼
+   Answer: "Apple's revenue was $394.3B in FY2023 [1]"
+
+  the GroundedAnswer returned from the LLM will be sent to the validate by the Orchestartion
+  If citation is not match or not existing or content of the citation is not match with resorce will failed the ValidationResult
+
+
 
 
 - Deploy
@@ -225,8 +245,13 @@ Especially for the Pydentic AI loop
 
 
 
+- run locally
+cd backend
+uv run uvicorn app.main:app --reload --port 8000
 
  
+cd frontend
+npm run dev
 
 
   

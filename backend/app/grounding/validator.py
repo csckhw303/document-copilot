@@ -107,15 +107,26 @@ def prune_unreferenced_citations(answer: GroundedAnswer) -> GroundedAnswer:
     if not marker_indices:
         return answer
 
-    citations = [
-        citation
-        for citation in answer.citations
-        if citation.citation_index in marker_indices
-    ]
-    if len(citations) == len(answer.citations):
-        return answer
+    kept = sorted(
+        [c for c in answer.citations if c.citation_index in marker_indices],
+        key=lambda c: c.citation_index,
+    )
+    if not kept:
+        return answer.model_copy(update={"citations": []})
 
-    return answer.model_copy(update={"citations": citations})
+    old_to_new = {c.citation_index: i + 1 for i, c in enumerate(kept)}
+
+    # Re-number markers in answer text and citations list to 1-based contiguous.
+    # Single regex pass avoids index-collision bugs (e.g. [3]→[2] then [2]→[1]).
+    new_answer = _CITATION_MARKER_RE.sub(
+        lambda m: f"[{old_to_new.get(int(m.group(1)), m.group(1))}]",
+        answer.answer,
+    )
+    new_citations = [
+        c.model_copy(update={"citation_index": old_to_new[c.citation_index]})
+        for c in kept
+    ]
+    return answer.model_copy(update={"answer": new_answer, "citations": new_citations})
 
 
 def _decision_indexes_match_cases(
