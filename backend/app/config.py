@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     retrieval_candidate_k: int = 50
     retrieval_top_k: int = 10
     retrieval_rrf_k: int = 60
-    retrieval_neighbor_radius: int = 1
+    retrieval_neighbor_radius: int = 2
     retrieval_fts_config: str = "english"
     retrieval_fts_keyword_model: str = "gpt-4.1-mini"
     retrieval_fts_keyword_min: int = 3

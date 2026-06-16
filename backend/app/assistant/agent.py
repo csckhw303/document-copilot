@@ -48,6 +48,7 @@ def get_document_agent() -> Agent[DocumentAgentDeps, GroundedAnswer]:
 @observe(name="document-agent", as_type="agent", capture_input=False, capture_output=False)
 def run_document_agent(query: str, deps: DocumentAgentDeps) -> GroundedAnswer:
     lf = get_client()
+    deps.trace_id = lf.get_current_trace_id()  # capture while @observe span is open
     lf.update_current_span(
         input={"query": query},
         metadata={

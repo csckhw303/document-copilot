@@ -35,6 +35,7 @@ class DocumentAgentDeps:
     thread_id: UUID
     user_id: UUID
     on_status: StatusCallback | None = None
+    trace_id: str | None = None  # populated by run_document_agent while @observe is active
 
     def emit_status(self, stage: str, message: str) -> None:
         if self.on_status is not None:
