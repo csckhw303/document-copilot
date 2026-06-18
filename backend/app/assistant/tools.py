@@ -1,17 +1,19 @@
-"""Bounded agent tools over the retrieval layer."""
+"""LangChain document agent tools."""
 
 from __future__ import annotations
 
 import asyncio
 import functools
 import time
+from typing import Annotated
 from uuid import UUID
 
-from pydantic_ai import RunContext
+import structlog
+from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolCallId, tool
+from langgraph.types import Command
 
-from app.assistant.deps import DocumentAgentDeps
-from app.assistant.progress import report_progress
-from app.assistant.status import emit_tool_start
 from app.config import settings
 from app.database.documents import (
     get_chunk_with_document,
@@ -20,7 +22,20 @@ from app.database.documents import (
 )
 from app.database.models import DocumentChunk, SourceDocument
 from app.database.session import get_session
+from app.retrieval.retriever import DocumentRetriever
 from app.retrieval.types import RetrievedPassage, SearchFilters, format_passages_for_agent
+
+log = structlog.get_logger()
+
+_retriever: DocumentRetriever | None = None
+
+
+def _get_retriever() -> DocumentRetriever:
+    """Singleton retriever — used when running on LangGraph Cloud (no retriever in config)."""
+    global _retriever
+    if _retriever is None:
+        _retriever = DocumentRetriever()
+    return _retriever
 
 
 def _passage_from_chunk(
@@ -55,7 +70,7 @@ def _parse_fiscal_years(raw: str | None) -> list[int] | None:
 
 
 def _search_sync(
-    deps: DocumentAgentDeps,
+    retriever: DocumentRetriever,
     query: str,
     *,
     ticker: str | None,
@@ -67,10 +82,10 @@ def _search_sync(
         form=form,
         fiscal_years=_parse_fiscal_years(fiscal_years),
     )
-    return deps.retriever.search(query, filters=filters)
+    return retriever.search(query, filters=filters)
 
 
-def _read_chunk_sync(deps: DocumentAgentDeps, chunk_id: UUID) -> RetrievedPassage | None:
+def _read_chunk_sync(chunk_id: UUID) -> RetrievedPassage | None:
     with get_session() as session:
         result = get_chunk_with_document(session, chunk_id)
         if result is None:
@@ -79,10 +94,7 @@ def _read_chunk_sync(deps: DocumentAgentDeps, chunk_id: UUID) -> RetrievedPassag
         return _passage_from_chunk(chunk, document)
 
 
-def _read_chunks_sync(
-    deps: DocumentAgentDeps,
-    chunk_ids: list[UUID],
-) -> list[RetrievedPassage]:
+def _read_chunks_sync(chunk_ids: list[UUID]) -> list[RetrievedPassage]:
     with get_session() as session:
         chunks_by_id = get_chunks_by_ids(session, chunk_ids)
         passages: list[RetrievedPassage] = []
@@ -94,11 +106,7 @@ def _read_chunks_sync(
         return passages
 
 
-def _read_surrounding_sync(
-    deps: DocumentAgentDeps,
-    chunk_id: UUID,
-    radius: int,
-) -> list[RetrievedPassage]:
+def _read_surrounding_sync(chunk_id: UUID, radius: int) -> list[RetrievedPassage]:
     with get_session() as session:
         anchor = get_chunk_with_document(session, chunk_id)
         if anchor is None:
@@ -109,151 +117,134 @@ def _read_surrounding_sync(
         for neighbor_chunk in neighbor_chunks:
             if neighbor_chunk.document is None:
                 continue
-            passages.append(
-                _passage_from_chunk(neighbor_chunk, neighbor_chunk.document)
-            )
+            passages.append(_passage_from_chunk(neighbor_chunk, neighbor_chunk.document))
         if anchor_chunk.document is not None:
-            passages.insert(
-                0,
-                _passage_from_chunk(anchor_chunk, anchor_chunk.document),
-            )
+            passages.insert(0, _passage_from_chunk(anchor_chunk, anchor_chunk.document))
         return passages
 
 
-async def _run_tool(
-    deps: DocumentAgentDeps,
-    name: str,
-    detail: str,
-    fn,
-    /,
-    *args,
-    **kwargs,
-):
-    emit_tool_start(deps, name, detail)
-    started = time.perf_counter()
-    result = await asyncio.to_thread(functools.partial(fn, *args, **kwargs))
-    if isinstance(result, list):
-        summary = f"{len(result)} results"
-    elif result is None:
-        summary = "not found"
-    else:
-        summary = "1 result"
-    report_progress(
-        f"tool {name} done ({summary}) in {time.perf_counter() - started:.2f}s"
-    )
-    return result
+async def _run_in_thread(fn, /, *args, **kwargs):
+    return await asyncio.to_thread(functools.partial(fn, *args, **kwargs))
 
 
+@tool
 async def search_filings(
-    ctx: RunContext[DocumentAgentDeps],
     query: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    config: RunnableConfig,
     ticker: str | None = None,
     form: str | None = None,
     fiscal_years: str | None = None,
-) -> str:
+) -> Command:
     """Search SEC filings with hybrid retrieval. Optional filters: ticker, form, fiscal_years (comma-separated)."""
-    filter_bits = [
-        bit
-        for bit in (
+    retriever: DocumentRetriever = config["configurable"].get("retriever") or _get_retriever()
+    filter_parts = [
+        s for s in (
             f"ticker={ticker}" if ticker else None,
             f"form={form}" if form else None,
             f"fiscal_years={fiscal_years}" if fiscal_years else None,
-        )
-        if bit
+        ) if s
     ]
-    detail = ", ".join(filter_bits) if filter_bits else "no filters"
-    passages = await _run_tool(
-        ctx.deps,
-        "search_filings",
-        detail,
-        _search_sync,
-        ctx.deps,
-        query,
-        ticker=ticker,
-        form=form,
-        fiscal_years=fiscal_years,
+    log.info("tool call", tool="search_filings", detail=", ".join(filter_parts) or "no filters")
+    t0 = time.perf_counter()
+    passages: list[RetrievedPassage] = await _run_in_thread(
+        _search_sync, retriever, query, ticker=ticker, form=form, fiscal_years=fiscal_years
     )
-    ctx.deps.registry.register_many(passages)
-    return format_passages_for_agent(passages)
+    log.info("tool done", tool="search_filings", results=len(passages), elapsed=round(time.perf_counter() - t0, 2))
+    return Command(update={
+        "messages": [ToolMessage(content=format_passages_for_agent(passages), tool_call_id=tool_call_id)],
+        "registry_passages": passages,
+    })
 
 
-async def read_chunk(ctx: RunContext[DocumentAgentDeps], chunk_id: str) -> str:
+@tool
+async def read_chunk(
+    chunk_id: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
     """Read the full text of a specific document chunk by UUID."""
     try:
         parsed_id = UUID(chunk_id)
     except ValueError:
-        return f"Error: invalid chunk_id {chunk_id!r}."
-
-    passage = await _run_tool(
-        ctx.deps,
-        "read_chunk",
-        f"chunk_id={chunk_id}",
-        _read_chunk_sync,
-        ctx.deps,
-        parsed_id,
-    )
+        return Command(update={
+            "messages": [ToolMessage(content=f"Error: invalid chunk_id {chunk_id!r}.", tool_call_id=tool_call_id)],
+        })
+    log.info("tool call", tool="read_chunk", chunk_id=chunk_id)
+    t0 = time.perf_counter()
+    passage: RetrievedPassage | None = await _run_in_thread(_read_chunk_sync, parsed_id)
+    log.info("tool done", tool="read_chunk", found=passage is not None, elapsed=round(time.perf_counter() - t0, 2))
     if passage is None:
-        return f"Error: chunk {chunk_id} not found."
+        return Command(update={
+            "messages": [ToolMessage(content=f"Error: chunk {chunk_id} not found.", tool_call_id=tool_call_id)],
+        })
+    return Command(update={
+        "messages": [ToolMessage(content=format_passages_for_agent([passage]), tool_call_id=tool_call_id)],
+        "registry_passages": [passage],
+    })
 
-    ctx.deps.registry.register(passage)
-    return format_passages_for_agent([passage])
 
-
-async def read_chunks(ctx: RunContext[DocumentAgentDeps], chunk_ids: list[str]) -> str:
+@tool
+async def read_chunks(
+    chunk_ids: list[str],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
     """Read the full text of multiple document chunks in one call."""
     parsed_ids: list[UUID] = []
-    for chunk_id in chunk_ids:
+    for cid in chunk_ids:
         try:
-            parsed_ids.append(UUID(chunk_id))
+            parsed_ids.append(UUID(cid))
         except ValueError:
-            return f"Error: invalid chunk_id {chunk_id!r}."
-
+            return Command(update={
+                "messages": [ToolMessage(content=f"Error: invalid chunk_id {cid!r}.", tool_call_id=tool_call_id)],
+            })
     if not parsed_ids:
-        return "Error: chunk_ids must include at least one UUID."
-
-    passages = await _run_tool(
-        ctx.deps,
-        "read_chunks",
-        f"count={len(parsed_ids)}",
-        _read_chunks_sync,
-        ctx.deps,
-        parsed_ids,
-    )
+        return Command(update={
+            "messages": [ToolMessage(content="Error: chunk_ids must include at least one UUID.", tool_call_id=tool_call_id)],
+        })
+    log.info("tool call", tool="read_chunks", count=len(parsed_ids))
+    t0 = time.perf_counter()
+    passages: list[RetrievedPassage] = await _run_in_thread(_read_chunks_sync, parsed_ids)
+    log.info("tool done", tool="read_chunks", results=len(passages), elapsed=round(time.perf_counter() - t0, 2))
     if not passages:
-        return "Error: none of the requested chunks were found."
+        return Command(update={
+            "messages": [ToolMessage(content="Error: none of the requested chunks were found.", tool_call_id=tool_call_id)],
+        })
+    return Command(update={
+        "messages": [ToolMessage(content=format_passages_for_agent(passages), tool_call_id=tool_call_id)],
+        "registry_passages": passages,
+    })
 
-    ctx.deps.registry.register_many(passages)
-    return format_passages_for_agent(passages)
 
-
+@tool
 async def read_surrounding_chunks(
-    ctx: RunContext[DocumentAgentDeps],
     chunk_id: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
     radius: int | None = None,
-) -> str:
+) -> Command:
     """Read chunks before and after a given chunk within the same filing."""
     try:
         parsed_id = UUID(chunk_id)
     except ValueError:
-        return f"Error: invalid chunk_id {chunk_id!r}."
-
-    resolved_radius = (
-        radius if radius is not None else settings.retrieval_neighbor_radius
-    )
+        return Command(update={
+            "messages": [ToolMessage(content=f"Error: invalid chunk_id {chunk_id!r}.", tool_call_id=tool_call_id)],
+        })
+    resolved_radius = radius if radius is not None else settings.retrieval_neighbor_radius
     if resolved_radius < 1:
-        return "Error: radius must be 1 or greater."
-
-    passages = await _run_tool(
-        ctx.deps,
-        "read_surrounding_chunks",
-        f"chunk_id={chunk_id} radius={resolved_radius}",
-        _read_surrounding_sync,
-        ctx.deps,
-        parsed_id,
-        resolved_radius,
-    )
+        return Command(update={
+            "messages": [ToolMessage(content="Error: radius must be 1 or greater.", tool_call_id=tool_call_id)],
+        })
+    log.info("tool call", tool="read_surrounding_chunks", chunk_id=chunk_id, radius=resolved_radius)
+    t0 = time.perf_counter()
+    passages: list[RetrievedPassage] = await _run_in_thread(_read_surrounding_sync, parsed_id, resolved_radius)
+    log.info("tool done", tool="read_surrounding_chunks", results=len(passages), elapsed=round(time.perf_counter() - t0, 2))
     if not passages:
-        return f"Error: chunk {chunk_id} not found."
+        return Command(update={
+            "messages": [ToolMessage(content=f"Error: chunk {chunk_id} not found.", tool_call_id=tool_call_id)],
+        })
+    return Command(update={
+        "messages": [ToolMessage(content=format_passages_for_agent(passages), tool_call_id=tool_call_id)],
+        "registry_passages": passages,
+    })
 
-    ctx.deps.registry.register_many(passages)
-    return format_passages_for_agent(passages)
+
+AGENT_TOOLS = [search_filings, read_chunk, read_chunks, read_surrounding_chunks]

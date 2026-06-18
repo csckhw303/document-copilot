@@ -1,51 +1,37 @@
-"""Coordinates one chat turn: agent → validate → stream → persist."""
+"""Coordinates one chat turn: graph → stream → persist."""
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator
 
 import structlog
-
 from supabase import AsyncClient
 
-from app.assistant.agent import run_document_agent
-from app.assistant.deps import DocumentAgentDeps, TurnRegistry
+from app.assistant.deps import TurnRegistry
+from app.assistant.graph import graph, make_initial_state
 from app.assistant.outputs import GroundedAnswer
 from app.auth.dependencies import CurrentUser
 from app.chat.messages import text_from_parts
 from app.chat.streaming import (
-    stream_grounded_turn_and_persist,
     stream_error,
+    stream_grounded_turn_and_persist,
     stream_status,
 )
-from app.grounding.validator import GroundingValidator, prune_unreferenced_citations
-from app.retrieval.retriever import DocumentRetriever
+from app.grounding.validator import ValidationResult
+from app.retrieval.types import RetrievedPassage
 from app.schemas.chat import UIMessage
-
-MAX_VALIDATION_ATTEMPTS = 2
 
 log = structlog.get_logger()
 
 
-async def _yield_status_updates(
-    status_queue: asyncio.Queue[tuple[str, str]],
-    agent_task: asyncio.Task[GroundedAnswer],
-) -> AsyncIterator[str]:
-    while not agent_task.done():
-        try:
-            stage, message = await asyncio.wait_for(status_queue.get(), timeout=0.3)
-        except TimeoutError:
-            continue
-        async for event in stream_status(stage, message):
-            yield event
-
-    while not status_queue.empty():
-        stage, message = status_queue.get_nowait()
-        async for event in stream_status(stage, message):
-            yield event
+def _tool_status(tool_name: str) -> tuple[str, str]:
+    if tool_name == "search_filings":
+        return "searching", "Searching SEC filings…"
+    if tool_name in {"read_chunk", "read_chunks", "read_surrounding_chunks"}:
+        return "reading", "Reading source passages…"
+    return "reading", "Reading source documents…"
 
 
 async def run_turn(
@@ -55,9 +41,7 @@ async def run_turn(
     user: CurrentUser,
     user_message: UIMessage,
     thread_title: str,
-    retriever: DocumentRetriever,
 ) -> AsyncIterator[str]:
-    loop = asyncio.get_running_loop()
     query = text_from_parts(user_message.parts).strip()
     if not query:
         async for event in stream_error("User message is empty."):
@@ -71,62 +55,69 @@ async def run_turn(
     async for event in stream_status("analyzing", "Analyzing your question…"):
         yield event
 
+    config = {
+        "configurable": {
+            "thread_id": str(thread_id),
+            "user_id": str(user.id),
+        }
+    }
+
     grounded: GroundedAnswer | None = None
-    validation = None
-    for attempt in range(1, MAX_VALIDATION_ATTEMPTS + 1):
-        registry = TurnRegistry()
-        status_queue = asyncio.Queue()
+    validation_ok = False
+    all_passages: list[RetrievedPassage] = []
 
-        def on_status(stage: str, message: str) -> None:
-            loop.call_soon_threadsafe(status_queue.put_nowait, (stage, message))
-
-        deps = DocumentAgentDeps(
-            retriever=retriever,
-            registry=registry,
-            thread_id=thread_id,
-            user_id=user.id,
-            on_status=on_status,
-        )
-        agent_task = asyncio.create_task(
-            asyncio.to_thread(run_document_agent, query, deps)
-        )
-
-        async for event in _yield_status_updates(status_queue, agent_task):
-            yield event
-
-        try:
-            grounded = await agent_task
-        except Exception as exc:
-            turn_log.error("agent failed", error=str(exc))
-            async for event in stream_error(f"Assistant run failed: {exc}"):
-                yield event
-            return
-
-        async for event in stream_status("verifying", "Verifying citations…"):
-            yield event
-
-        grounded = prune_unreferenced_citations(grounded)
-        validation = await GroundingValidator().validate(grounded, registry)
-        turn_log.info("validation", attempt=attempt, ok=validation.ok, citations=len(grounded.citations))
-        if validation.ok or attempt == MAX_VALIDATION_ATTEMPTS:
-            break
-
-        async for event in stream_status(
-            "retrying",
-            "Could not fully verify citations; retrying with stricter grounding…",
+    try:
+        async for chunk in graph.astream(
+            make_initial_state(query), config=config, stream_mode="updates"
         ):
-            yield event
+            for node_name, update in chunk.items():
+                if node_name == "agent_node":
+                    messages = update.get("messages", [])
+                    if messages:
+                        tool_calls = getattr(messages[-1], "tool_calls", [])
+                        if tool_calls:
+                            stage, message = _tool_status(tool_calls[0]["name"])
+                            async for event in stream_status(stage, message):
+                                yield event
 
-    if grounded is None or validation is None:
+                elif node_name == "validate_node":
+                    attempts = update.get("validation_attempts", 0)
+                    ok = update.get("validation_ok", False)
+                    if attempts > 1 and not ok:
+                        async for event in stream_status(
+                            "retrying",
+                            "Could not fully verify citations; retrying with stricter grounding…",
+                        ):
+                            yield event
+                    else:
+                        async for event in stream_status("verifying", "Verifying citations…"):
+                            yield event
+
+                if "grounded_answer" in update and update["grounded_answer"] is not None:
+                    grounded = update["grounded_answer"]
+                if "validation_ok" in update:
+                    validation_ok = update["validation_ok"]
+                if "registry_passages" in update:
+                    all_passages.extend(update["registry_passages"])
+
+    except Exception as exc:
+        turn_log.error("graph failed", error=str(exc))
+        async for event in stream_error(f"Assistant run failed: {exc}"):
+            yield event
+        return
+
+    turn_log.info("turn done", elapsed=round(time.perf_counter() - t0, 2), ok=validation_ok)
+
+    if grounded is None:
         async for event in stream_error("Assistant run failed before producing an answer."):
             yield event
         return
 
-    if validation.ok:
-        async for event in stream_status("streaming", "Preparing answer…"):
-            yield event
+    async for event in stream_status("streaming", "Preparing answer…"):
+        yield event
 
-    turn_log.info("turn done", elapsed=round(time.perf_counter() - t0, 2), ok=validation.ok)
+    registry = TurnRegistry()
+    registry.register_many(all_passages)
 
     async for event in stream_grounded_turn_and_persist(
         client=client,
@@ -135,6 +126,6 @@ async def run_turn(
         thread_title=thread_title,
         answer=grounded,
         registry=registry,
-        validation=validation,
+        validation=ValidationResult(ok=validation_ok),
     ):
         yield event

@@ -25,7 +25,6 @@ from app.database.models import DocumentChunk
 from app.database.session import get_session
 from app.database.supabase import create_user_client
 from app.database.users import ensure_user
-from app.retrieval.retriever import DocumentRetriever
 from app.schemas.chat import (
     CitationContextChunk,
     CitationContextResponse,
@@ -181,7 +180,6 @@ async def post_stream(
     user_message = extract_last_user_message(body.messages)
     client = await create_user_client(access_token)
 
-    retriever = DocumentRetriever()
     log.info("stream request", thread_id=str(body.thread_id), user_id=str(user.id))
     return StreamingResponse(
         run_turn(
@@ -190,7 +188,6 @@ async def post_stream(
             user=user,
             user_message=user_message,
             thread_title=thread.title,
-            retriever=retriever,
         ),
         media_type="text/event-stream",
     )
