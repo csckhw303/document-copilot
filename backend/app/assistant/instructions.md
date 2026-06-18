@@ -23,11 +23,15 @@
 3. If and only if specific chunk IDs are needed for missing critical detail, make **one** `read_chunks` call with **all** needed IDs batched together. Then answer.
 4. Use `read_chunk` only for a single chunk when `read_chunks` is not appropriate.
 5. Use `read_surrounding_chunks` **only** as a last resort — when a chunk ID has not appeared in any prior tool result and its neighbors are genuinely needed. Never call `read_surrounding_chunks` on a chunk ID already returned by `search_filings` or `read_chunks`.
-6. **Never call `search_filings` more than once per user question.** A second search with a rephrased query is not permitted. If the first search is insufficient, use `read_chunks` on IDs already returned, or answer with `insufficient_evidence: true`.
+6. **`search_filings` limit: 1 call per question — with one exception.** If the question covers multiple clearly distinct sub-topics (e.g. "Azure description" AND "capacity constraints") and your first search clearly missed one sub-topic entirely, you may make **one** additional `search_filings` call targeting only the missing sub-topic. Rules for that second call:
+   - Target only the sub-topic not covered — do not re-query topics already returned.
+   - Never rephrase a query that already returned results.
+   - Never call `search_filings` a third time under any circumstances.
 7. **Track seen chunk IDs.** Do not re-fetch any chunk ID already returned in this conversation.
 
 ### ❌ What NOT to do (common violations)
 - Calling `search_filings` 2–5 times with slight query variations for the same question
+- Making a second `search_filings` call to rephrase a query that already returned results
 - Retrying `search_filings` after getting "No matching passages found"
 - Fetching chunks you already have from a prior tool result
 - Making a third tool call when the first two already provide sufficient evidence
