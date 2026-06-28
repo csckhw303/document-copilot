@@ -84,7 +84,9 @@ def citation_parts_from_grounded_answer(
 ) -> list[CitationPart]:
     parts: list[CitationPart] = []
     for citation in answer.citations:
-        passage = registry.passages_by_chunk_id[citation.chunk_id]
+        passage = registry.passages_by_chunk_id.get(citation.chunk_id)
+        if passage is None:
+            continue
         parts.append(
             CitationPart(
                 id=str(citation.chunk_id),

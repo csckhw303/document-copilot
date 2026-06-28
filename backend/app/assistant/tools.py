@@ -31,11 +31,30 @@ _retriever: DocumentRetriever | None = None
 
 
 def _get_retriever() -> DocumentRetriever:
-    """Singleton retriever — used when running on LangGraph Cloud (no retriever in config)."""
     global _retriever
     if _retriever is None:
         _retriever = DocumentRetriever()
     return _retriever
+
+
+def get_retriever() -> DocumentRetriever:
+    """Public accessor for the singleton retriever (used by prefetch_node)."""
+    return _get_retriever()
+
+
+async def prefetch_search(
+    retriever: DocumentRetriever,
+    query: str,
+    *,
+    ticker: str | None,
+    form: str | None,
+    fiscal_years: str | None,
+) -> list[RetrievedPassage]:
+    """Run retrieval before the agent loop starts (called by prefetch_node in graph.py)."""
+    return await _run_in_thread(
+        _search_sync, retriever, query,
+        ticker=ticker, form=form, fiscal_years=fiscal_years,
+    )
 
 
 def _passage_from_chunk(

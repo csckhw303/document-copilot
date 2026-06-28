@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
+import time
 from pathlib import Path
 
 import structlog
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
@@ -13,10 +15,36 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.assistant.outputs import GroundedAnswer
 from app.assistant.state import AgentState, registry_from_state
-from app.assistant.tools import AGENT_TOOLS
+from app.assistant.tools import AGENT_TOOLS, get_retriever, prefetch_search
 from app.config import settings
 from app.grounding.validator import GroundingValidator, prune_unreferenced_citations
+from app.retrieval.types import format_passages_for_agent
+
 log = structlog.get_logger()
+
+# Simple keyword-based filter extraction for the known pilot corpus.
+# Imprecise matches are acceptable — the agent will re-search with corrected filters if needed.
+_TICKER_KEYWORDS: dict[str, str] = {
+    "apple": "AAPL", "aapl": "AAPL",
+    "amazon": "AMZN", "amzn": "AMZN",
+    "google": "GOOGL", "alphabet": "GOOGL", "googl": "GOOGL",
+    "microsoft": "MSFT", "msft": "MSFT",
+    "nvidia": "NVDA", "nvda": "NVDA",
+}
+_YEAR_RE = re.compile(r"\bfy\s*(\d{4})\b|fiscal\s+(?:year\s+)?(\d{4})\b", re.IGNORECASE)
+
+
+def _extract_filters(query: str) -> tuple[str | None, str | None, str | None]:
+    lower = query.lower()
+    ticker = next((sym for kw, sym in _TICKER_KEYWORDS.items() if kw in lower), None)
+    form: str | None = None
+    if "10-k" in lower or "annual" in lower:
+        form = "10-K"
+    elif "10-q" in lower or "quarterly" in lower:
+        form = "10-Q"
+    matches = _YEAR_RE.findall(query)
+    fiscal_years = ",".join(m[0] or m[1] for m in matches) if matches else None
+    return ticker, form, fiscal_years
 
 MAX_VALIDATION_ATTEMPTS = 2
 
