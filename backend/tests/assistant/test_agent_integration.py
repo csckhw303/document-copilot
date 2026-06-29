@@ -1,27 +1,23 @@
 import asyncio
-import uuid
 
 import pytest
 
-from app.assistant.agent import run_document_agent
-from app.assistant.deps import DocumentAgentDeps, TurnRegistry
+from app.assistant.graph import graph, make_initial_state
+from app.assistant.state import registry_from_state
 from app.grounding.validator import GroundingValidator
-from app.retrieval.retriever import DocumentRetriever
 
 
 @pytest.mark.integration
 def test_agent_answers_apple_question_with_citations() -> None:
-    registry = TurnRegistry()
-    deps = DocumentAgentDeps(
-        retriever=DocumentRetriever(),
-        registry=registry,
-        thread_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+    state = asyncio.run(
+        graph.ainvoke(
+            make_initial_state(
+                "How did Apple describe iPhone and Services revenue in its recent 10-K filings?"
+            )
+        )
     )
-    answer = run_document_agent(
-        "How did Apple describe iPhone and Services revenue in its recent 10-K filings?",
-        deps,
-    )
+    answer = state["grounded_answer"]
+    registry = registry_from_state(state)
     validation = asyncio.run(GroundingValidator().validate(answer, registry))
 
     assert validation.ok
@@ -36,14 +32,11 @@ def test_agent_answers_apple_question_with_citations() -> None:
 
 @pytest.mark.integration
 def test_agent_refuses_underspecified_stock_pick_question() -> None:
-    registry = TurnRegistry()
-    deps = DocumentAgentDeps(
-        retriever=DocumentRetriever(),
-        registry=registry,
-        thread_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+    state = asyncio.run(
+        graph.ainvoke(make_initial_state("What is the best stock to buy right now?"))
     )
-    answer = run_document_agent("What is the best stock to buy right now?", deps)
+    answer = state["grounded_answer"]
+    registry = registry_from_state(state)
     validation = asyncio.run(GroundingValidator().validate(answer, registry))
 
     assert validation.ok

@@ -1,14 +1,13 @@
-import time
 import uuid
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.assistant.outputs import Citation, GroundedAnswer
 from app.auth.dependencies import CurrentUser
 from app.chat.orchestrator import run_turn
-from app.grounding.validator import ValidationResult
 from app.retrieval.types import RetrievedPassage
 from app.schemas.chat import TextPart, UIMessage
 
@@ -47,22 +46,13 @@ async def test_run_turn_streams_grounded_answer_and_persists() -> None:
     user_message = UIMessage(role="user", parts=[TextPart(text="Azure growth?")])
     events: list[str] = []
 
-    def fake_run(query: str, deps) -> GroundedAnswer:
-        deps.emit_status("searching", "Searching SEC filings…")
-        time.sleep(0.05)
-        deps.registry.register(passage)
-        return grounded
-
-    fake_validator = MagicMock()
-    fake_validator.validate = AsyncMock(return_value=ValidationResult(ok=True))
+    async def fake_astream(*args, **kwargs):
+        yield {"agent_node": {"messages": [AIMessage(content="", tool_calls=[{"name": "search_filings", "id": "t1", "type": "tool_call", "args": {}}])]}}
+        yield {"validate_node": {"grounded_answer": grounded, "validation_ok": True, "validation_attempts": 1, "registry_passages": [passage]}}
 
     with (
-        patch("app.chat.orchestrator.run_document_agent", fake_run),
-        patch("app.chat.orchestrator.GroundingValidator", return_value=fake_validator),
-        patch(
-            "app.chat.streaming.append_grounded_turn",
-            AsyncMock(),
-        ) as mock_persist,
+        patch("app.chat.orchestrator.graph.astream", fake_astream),
+        patch("app.chat.streaming.append_grounded_turn", AsyncMock()) as mock_persist,
     ):
         async for event in run_turn(
             client=MagicMock(),
@@ -70,7 +60,6 @@ async def test_run_turn_streams_grounded_answer_and_persists() -> None:
             user=CurrentUser(id=uuid.uuid4(), email="a@example.com"),
             user_message=user_message,
             thread_title="New chat",
-            retriever=MagicMock(),
         ):
             events.append(event)
 
@@ -98,8 +87,11 @@ async def test_run_turn_validation_failure_does_not_persist() -> None:
     )
     user_message = UIMessage(role="user", parts=[TextPart(text="Question")])
 
+    async def fake_astream(*args, **kwargs):
+        yield {"validate_node": {"grounded_answer": grounded, "validation_ok": False, "validation_attempts": 1}}
+
     with (
-        patch("app.chat.orchestrator.run_document_agent", return_value=grounded),
+        patch("app.chat.orchestrator.graph.astream", fake_astream),
         patch("app.chat.streaming.append_grounded_turn", AsyncMock()) as mock_persist,
     ):
         events = [
@@ -110,7 +102,6 @@ async def test_run_turn_validation_failure_does_not_persist() -> None:
                 user=CurrentUser(id=uuid.uuid4(), email="a@example.com"),
                 user_message=user_message,
                 thread_title="New chat",
-                retriever=MagicMock(),
             )
         ]
 
@@ -124,11 +115,7 @@ async def test_run_turn_retries_once_after_validation_failure() -> None:
     invalid = GroundedAnswer(
         answer="Bad citation [1].",
         citations=[
-            Citation(
-                citation_index=1,
-                chunk_id=uuid.uuid4(),
-                excerpt="not registered",
-            )
+            Citation(citation_index=1, chunk_id=uuid.uuid4(), excerpt="not registered")
         ],
     )
     valid = GroundedAnswer(
@@ -142,27 +129,14 @@ async def test_run_turn_retries_once_after_validation_failure() -> None:
         ],
     )
     user_message = UIMessage(role="user", parts=[TextPart(text="Azure growth?")])
-    attempts = 0
 
-    def fake_run(query: str, deps) -> GroundedAnswer:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            return invalid
-        deps.registry.register(passage)
-        return valid
-
-    fake_validator = MagicMock()
-    fake_validator.validate = AsyncMock(
-        side_effect=[
-            ValidationResult(ok=False, error="Citation references chunk x that was not retrieved."),
-            ValidationResult(ok=True),
-        ]
-    )
+    async def fake_astream(*args, **kwargs):
+        yield {"validate_node": {"grounded_answer": invalid, "validation_ok": False, "validation_attempts": 1}}
+        yield {"agent_node": {"messages": [AIMessage(content="Let me try again.")]}}
+        yield {"validate_node": {"grounded_answer": valid, "validation_ok": True, "validation_attempts": 2, "registry_passages": [passage]}}
 
     with (
-        patch("app.chat.orchestrator.run_document_agent", fake_run),
-        patch("app.chat.orchestrator.GroundingValidator", return_value=fake_validator),
+        patch("app.chat.orchestrator.graph.astream", fake_astream),
         patch("app.chat.streaming.append_grounded_turn", AsyncMock()) as mock_persist,
     ):
         events = [
@@ -173,12 +147,9 @@ async def test_run_turn_retries_once_after_validation_failure() -> None:
                 user=CurrentUser(id=uuid.uuid4(), email="a@example.com"),
                 user_message=user_message,
                 thread_title="New chat",
-                retriever=MagicMock(),
             )
         ]
 
-    assert attempts == 2
-    assert fake_validator.validate.await_count == 2
     assert any('"stage":"retrying"' in event for event in events)
     assert any('"type":"text-delta"' in event for event in events)
     mock_persist.assert_awaited_once()

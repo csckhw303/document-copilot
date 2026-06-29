@@ -17,7 +17,6 @@ from langgraph.types import Command
 from app.config import settings
 from app.database.documents import (
     get_chunk_with_document,
-    get_chunks_by_ids,
     get_surrounding_chunks,
 )
 from app.database.models import DocumentChunk, SourceDocument
@@ -112,17 +111,6 @@ def _read_chunk_sync(chunk_id: UUID) -> RetrievedPassage | None:
         chunk, document = result
         return _passage_from_chunk(chunk, document)
 
-
-def _read_chunks_sync(chunk_ids: list[UUID]) -> list[RetrievedPassage]:
-    with get_session() as session:
-        chunks_by_id = get_chunks_by_ids(session, chunk_ids)
-        passages: list[RetrievedPassage] = []
-        for chunk_id in chunk_ids:
-            chunk = chunks_by_id.get(chunk_id)
-            if chunk is None or chunk.document is None:
-                continue
-            passages.append(_passage_from_chunk(chunk, chunk.document))
-        return passages
 
 
 def _read_surrounding_sync(chunk_id: UUID, radius: int) -> list[RetrievedPassage]:
@@ -222,7 +210,8 @@ async def read_chunks(
         })
     log.info("tool call", tool="read_chunks", count=len(parsed_ids))
     t0 = time.perf_counter()
-    passages: list[RetrievedPassage] = await _run_in_thread(_read_chunks_sync, parsed_ids)
+    results = await asyncio.gather(*[_run_in_thread(_read_chunk_sync, cid) for cid in parsed_ids])
+    passages: list[RetrievedPassage] = [p for p in results if p is not None]
     log.info("tool done", tool="read_chunks", results=len(passages), elapsed=round(time.perf_counter() - t0, 2))
     if not passages:
         return Command(update={

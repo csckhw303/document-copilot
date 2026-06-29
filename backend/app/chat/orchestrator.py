@@ -81,9 +81,8 @@ async def run_turn(
                                 yield event
 
                 elif node_name == "validate_node":
-                    attempts = update.get("validation_attempts", 0)
                     ok = update.get("validation_ok", False)
-                    if attempts > 1 and not ok:
+                    if not ok:
                         async for event in stream_status(
                             "retrying",
                             "Could not fully verify citations; retrying with stricter grounding…",
