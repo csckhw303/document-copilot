@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+import uuid
 
 from app.assistant.graph import graph, make_initial_state
 from app.assistant.state import registry_from_state
@@ -26,7 +27,8 @@ async def _run(query: str) -> None:
     print(f"Model: {settings.openai_chat_model}", flush=True)
     print(f"Query ({QUERY_KEY}): {query}\n", flush=True)
 
-    state = await graph.ainvoke(make_initial_state(query))
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    state = await graph.ainvoke(make_initial_state(query), config=config)
     elapsed = round(time.perf_counter() - t0, 2)
 
     answer = state["grounded_answer"]

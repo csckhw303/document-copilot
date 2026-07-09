@@ -10,7 +10,7 @@ import structlog
 from supabase import AsyncClient
 
 from app.assistant.deps import TurnRegistry
-from app.assistant.graph import graph, make_initial_state
+from app.assistant.graph import graph, make_followup_input, make_initial_state
 from app.assistant.outputs import GroundedAnswer
 from app.auth.dependencies import CurrentUser
 from app.chat.messages import text_from_parts
@@ -66,9 +66,17 @@ async def run_turn(
     validation_ok = False
     all_passages: list[RetrievedPassage] = []
 
+    # Continue the conversation if this thread already has checkpointed state,
+    # otherwise seed a fresh turn with the system prompt.
+    snapshot = await graph.aget_state(config)
+    if snapshot.values.get("messages"):
+        graph_input = make_followup_input(query)
+    else:
+        graph_input = make_initial_state(query)
+
     try:
         async for chunk in graph.astream(
-            make_initial_state(query), config=config, stream_mode="updates"
+            graph_input, config=config, stream_mode="updates"
         ):
             for node_name, update in chunk.items():
                 if node_name == "agent_node":

@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 import pytest
 
@@ -13,7 +14,8 @@ def test_agent_answers_apple_question_with_citations() -> None:
         graph.ainvoke(
             make_initial_state(
                 "How did Apple describe iPhone and Services revenue in its recent 10-K filings?"
-            )
+            ),
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
     )
     answer = state["grounded_answer"]
@@ -33,7 +35,10 @@ def test_agent_answers_apple_question_with_citations() -> None:
 @pytest.mark.integration
 def test_agent_refuses_underspecified_stock_pick_question() -> None:
     state = asyncio.run(
-        graph.ainvoke(make_initial_state("What is the best stock to buy right now?"))
+        graph.ainvoke(
+            make_initial_state("What is the best stock to buy right now?"),
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+        )
     )
     answer = state["grounded_answer"]
     registry = registry_from_state(state)

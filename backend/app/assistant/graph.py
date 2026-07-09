@@ -10,11 +10,12 @@ import structlog
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.assistant.outputs import GroundedAnswer
-from app.assistant.state import AgentState, registry_from_state
+from app.assistant.state import RESET_PASSAGES, AgentState, registry_from_state
 from app.assistant.tools import AGENT_TOOLS, get_retriever, prefetch_search
 from app.config import settings
 from app.grounding.validator import GroundingValidator, prune_unreferenced_citations
@@ -126,11 +127,14 @@ _builder.add_edge("tools_node", "agent_node")
 _builder.add_edge("extract_node", "validate_node")
 _builder.add_conditional_edges("validate_node", _should_retry)
 
-graph = _builder.compile()
+# MemorySaver keeps per-thread state in-process (POC only — lost on restart, not
+# shared across workers). Swap for a PostgresSaver for durable, multi-worker memory.
+_checkpointer = MemorySaver()
+graph = _builder.compile(checkpointer=_checkpointer)
 
 
 def make_initial_state(query: str) -> dict:
-    """Build the initial AgentState dict for a new turn."""
+    """Build the full initial AgentState for the first turn of a thread."""
     return {
         "messages": [
             SystemMessage(content=_INSTRUCTIONS),
@@ -138,6 +142,22 @@ def make_initial_state(query: str) -> dict:
         ],
         "grounded_answer": None,
         "registry_passages": [],
+        "validation_attempts": 0,
+        "validation_ok": False,
+    }
+
+
+def make_followup_input(query: str) -> dict:
+    """Build the state update for a continuing turn on an existing (checkpointed) thread.
+
+    Only the new user message is appended — prior history lives in the checkpoint. The
+    per-turn fields are reset so grounding stays scoped to this question: RESET_PASSAGES
+    clears the citation allowlist, and the validation counters restart from zero.
+    """
+    return {
+        "messages": [{"role": "user", "content": query}],
+        "grounded_answer": None,
+        "registry_passages": RESET_PASSAGES,
         "validation_attempts": 0,
         "validation_ok": False,
     }
