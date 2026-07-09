@@ -79,7 +79,13 @@ class StatusPart(BaseModel):
     data: StatusPayload
 
 
-MessagePart = Annotated[TextPart | CitationPart, Field(discriminator="type")]
+# StatusPart is included so that transient "data-status" progress parts, which
+# the AI SDK accumulates into the assistant message during streaming and then
+# replays in the history on the next turn, validate instead of 422-ing. They
+# carry no conversational content and are ignored during turn processing.
+MessagePart = Annotated[
+    TextPart | CitationPart | StatusPart, Field(discriminator="type")
+]
 
 
 class UIMessage(BaseModel):

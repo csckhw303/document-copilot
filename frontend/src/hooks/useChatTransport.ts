@@ -5,6 +5,12 @@ import { getAccessToken } from '@/lib/api'
 import { isStatusPart, type PipelineStatus } from '@/lib/citations'
 import { env } from '@/lib/env'
 
+// Transient "data-status" progress parts are UI-only; drop them so we don't
+// replay ephemeral state to the backend on the next turn.
+function stripStatusParts<T extends { parts: unknown[] }>(message: T): T {
+  return { ...message, parts: message.parts.filter((part) => !isStatusPart(part)) }
+}
+
 async function consumeStatusStream(
   stream: ReadableStream<Uint8Array>,
   onStatus: (status: PipelineStatus) => void,
@@ -57,7 +63,7 @@ export function useChatTransport(
           return token ? { Authorization: `Bearer ${token}` } : {}
         },
         prepareSendMessagesRequest: ({ messages }) => ({
-          body: { threadId, messages },
+          body: { threadId, messages: messages.map(stripStatusParts) },
         }),
         fetch: async (input, init) => {
           const response = await fetch(input, init)
