@@ -48,7 +48,7 @@ def _chunk(
     )
 
 
-@patch("app.retrieval.retriever.get_surrounding_chunks")
+@patch("app.retrieval.retriever.get_surrounding_chunks_batch")
 @patch("app.retrieval.retriever.get_chunks_by_ids")
 @patch("app.retrieval.retriever.full_text_search")
 @patch("app.retrieval.retriever.semantic_search")
@@ -60,7 +60,7 @@ def test_document_retriever_fuses_and_hydrates(
     mock_semantic_search: MagicMock,
     mock_full_text_search: MagicMock,
     mock_get_chunks_by_ids: MagicMock,
-    mock_get_surrounding_chunks: MagicMock,
+    mock_get_surrounding_chunks_batch: MagicMock,
 ) -> None:
     mock_embed_query.return_value = [0.1] * 3
     mock_extract_fts_keywords.return_value = "iPhone Services revenue"
@@ -79,7 +79,9 @@ def test_document_retriever_fuses_and_hydrates(
     neighbor = _chunk(ID_N1, chunk_index=4, text="prior context", document=document)
 
     mock_get_chunks_by_ids.return_value = {ID_A: chunk_a, ID_B: chunk_b}
-    mock_get_surrounding_chunks.return_value = [neighbor]
+    # Both anchors' windows include the neighbor; global dedup attaches it to
+    # the first anchor only.
+    mock_get_surrounding_chunks_batch.return_value = {ID_A: [neighbor], ID_B: [neighbor]}
 
     session = MagicMock()
     retriever = DocumentRetriever()

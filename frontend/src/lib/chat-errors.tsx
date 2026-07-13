@@ -71,6 +71,17 @@ export function classifyChatError(error: Error): ClassifiedChatError {
     }
   }
 
+  if (messageIncludesAny(text, ['too many search steps', 'narrowing', 'smaller parts'])) {
+    return {
+      kind: 'retrieval',
+      title: 'Question too broad',
+      message:
+        text ||
+        'This question needed too many search steps. Try narrowing it or breaking it into smaller parts.',
+      showLoginLink: false,
+    }
+  }
+
   if (messageIncludesAny(text, ['assistant run failed', 'retrieval', 'search'])) {
     return {
       kind: 'retrieval',

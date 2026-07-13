@@ -11,7 +11,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database.documents import get_chunks_by_ids, get_surrounding_chunks
+from app.database.documents import get_chunks_by_ids, get_surrounding_chunks_batch
 from app.database.session import get_session
 from app.retrieval.embeddings import embed_query
 from app.retrieval.fusion import reciprocal_rank_fusion
@@ -98,39 +98,48 @@ class DocumentRetriever:
         fusion_scores = {chunk_id: score for chunk_id, score in fused}
         chunks_by_id = get_chunks_by_ids(session, fused_ids)
 
+        # Anchor chunks in fusion order, skipping any that failed to load.
+        anchors = [
+            chunk
+            for chunk_id in fused_ids
+            if (chunk := chunks_by_id.get(chunk_id)) is not None
+            and chunk.document is not None
+        ]
+
+        # One query for every anchor's neighbor window, instead of a round trip
+        # per anchor (previously up to top_k sequential lookups).
+        neighbors_by_anchor = (
+            get_surrounding_chunks_batch(
+                session, anchors, settings.retrieval_neighbor_radius
+            )
+            if include_neighbors
+            else {}
+        )
+
         passages: list[RetrievedPassage] = []
         seen_neighbor_ids: set[UUID] = set(fused_ids)
 
-        for chunk_id in fused_ids:
-            chunk = chunks_by_id.get(chunk_id)
-            if chunk is None or chunk.document is None:
-                continue
-
+        for chunk in anchors:
             neighbors: list[RetrievedPassage] = []
-            if include_neighbors:
-                for neighbor_chunk in get_surrounding_chunks(
-                    session,
-                    chunk_id,
-                    settings.retrieval_neighbor_radius,
-                ):
-                    if neighbor_chunk.id in seen_neighbor_ids:
-                        continue
-                    if neighbor_chunk.document is None:
-                        continue
-                    seen_neighbor_ids.add(neighbor_chunk.id)
-                    neighbors.append(
-                        _passage_from_chunk(
-                            neighbor_chunk,
-                            neighbor_chunk.document,
-                            fusion_score=0.0,
-                        )
+            for neighbor_chunk in neighbors_by_anchor.get(chunk.id, []):
+                if neighbor_chunk.id in seen_neighbor_ids:
+                    continue
+                if neighbor_chunk.document is None:
+                    continue
+                seen_neighbor_ids.add(neighbor_chunk.id)
+                neighbors.append(
+                    _passage_from_chunk(
+                        neighbor_chunk,
+                        neighbor_chunk.document,
+                        fusion_score=0.0,
                     )
+                )
 
             passages.append(
                 _passage_from_chunk(
                     chunk,
                     chunk.document,
-                    fusion_score=fusion_scores[chunk_id],
+                    fusion_score=fusion_scores[chunk.id],
                     neighbors=neighbors,
                 )
             )

@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import structlog
+from langgraph.errors import GraphRecursionError
 from supabase import AsyncClient
 
 from app.assistant.deps import TurnRegistry
@@ -14,6 +15,7 @@ from app.assistant.graph import graph, make_followup_input, make_initial_state
 from app.assistant.outputs import GroundedAnswer
 from app.auth.dependencies import CurrentUser
 from app.chat.messages import text_from_parts
+from app.config import settings
 from app.chat.streaming import (
     stream_error,
     stream_grounded_turn_and_persist,
@@ -55,11 +57,17 @@ async def run_turn(
     async for event in stream_status("analyzing", "Analyzing your question…"):
         yield event
 
+    # recursion_limit counts super-steps (each agent->tools round trip is two),
+    # plus the extract/validate/retry tail. Derive it from the configured agent
+    # request limit so broad, multi-search questions have room to finish instead
+    # of tripping LangGraph's default limit of 25 and surfacing as "Search failed".
+    recursion_limit = settings.openai_agent_request_limit * 2 + 4
     config = {
         "configurable": {
             "thread_id": str(thread_id),
             "user_id": str(user.id),
-        }
+        },
+        "recursion_limit": recursion_limit,
     }
 
     grounded: GroundedAnswer | None = None
@@ -107,8 +115,16 @@ async def run_turn(
                 if "registry_passages" in update:
                     all_passages.extend(update["registry_passages"])
 
+    except GraphRecursionError:
+        turn_log.error("graph recursion limit hit", limit=recursion_limit, exc_info=True)
+        async for event in stream_error(
+            "This question needed too many search steps to complete. "
+            "Try narrowing it or breaking it into smaller parts."
+        ):
+            yield event
+        return
     except Exception as exc:
-        turn_log.error("graph failed", error=str(exc))
+        turn_log.error("graph failed", error=str(exc), error_type=type(exc).__name__, exc_info=True)
         async for event in stream_error(f"Assistant run failed: {exc}"):
             yield event
         return
