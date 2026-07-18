@@ -13,9 +13,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import Overwrite
 
 from app.assistant.outputs import GroundedAnswer
-from app.assistant.state import RESET_PASSAGES, AgentState, registry_from_state
+from app.assistant.state import AgentState, registry_from_state
 from app.assistant.tools import AGENT_TOOLS, get_retriever, prefetch_search
 from app.config import settings
 from app.grounding.validator import GroundingValidator, prune_unreferenced_citations
@@ -151,13 +152,14 @@ def make_followup_input(query: str) -> dict:
     """Build the state update for a continuing turn on an existing (checkpointed) thread.
 
     Only the new user message is appended — prior history lives in the checkpoint. The
-    per-turn fields are reset so grounding stays scoped to this question: RESET_PASSAGES
-    clears the citation allowlist, and the validation counters restart from zero.
+    per-turn fields are reset so grounding stays scoped to this question: Overwrite(value=[])
+    clears the citation allowlist (bypassing the append reducer), and the validation
+    counters restart from zero.
     """
     return {
         "messages": [{"role": "user", "content": query}],
         "grounded_answer": None,
-        "registry_passages": RESET_PASSAGES,
+        "registry_passages": Overwrite(value=[]),
         "validation_attempts": 0,
         "validation_ok": False,
     }
